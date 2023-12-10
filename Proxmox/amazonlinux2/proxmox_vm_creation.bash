@@ -36,7 +36,7 @@ echo "You have selected the storage pool: $STORAGE_POOL"
 # Function to list storage pools (except local-lvm) and allow user to select one for ISO and ISO image
 choose_iso_storage_and_image() {
     # Get and list storage pools, excluding 'local-lvm'
-    iso_pools=$(pvesm status | awk 'NR>1 && $1 != "local-lvm" {print NR-1 ") " $1}')
+    iso_pools=$(pvesm status -content iso | awk '{if(NR>1)print $1}')
 
     if [ -z "$iso_pools" ]; then
 		echo "No storage pools found."
@@ -135,44 +135,51 @@ get_vm_name() {
 VM_NAME=$(get_vm_name)
 echo "$VM_NAME selected for Proxmox VM"
 
-# Function to list and select available memory options for VM
-select_memory_option() {
-    # Use 'grep' and 'cut' as an alternative to 'awk' for compatibility
-    local total_memory_mib=$(free -m | grep "^Mem:" | cut -d':' -f2 | cut -d' ' -f2)
-
-    local available_options=()
-    local option=2048
+# Function to list available memory options for VM
+list_memory_options() {
+    total_memory_mib=$(free -m | awk '/^Mem:/{print int($2)}')
+    available_options=()
+    option=2048
 
     while [ "$option" -le "$total_memory_mib" ]; do
-		available_options+=("$option")
-		option=$((option * 2))
+        available_options+=("$option")
+        option=$((option * 2))
     done
 
-    echo "Total Physical Memory Available: $total_memory_mib MiB"
-    echo "Available Memory Options for VM:"
-
-    local num_options=${#available_options[@]}
-    if [ "$num_options" -eq 0 ]; then
-		echo "Insufficient memory for VM creation."
-		exit 1
-    fi
-
-    for ((i = 0; i < num_options; i++)); do
-		echo "$((i + 1)). ${available_options[i]} MiB"
-    done
-
-    while true; do
-	read -p "Enter the number corresponding to the desired memory option (1 to $num_options): " selection
-		if [[ "$selection" -ge 1 && "$selection" -le "$num_options" ]]; then
-			MEMORY="${available_options[$((selection - 1))]}M"
-			echo "Selected Memory for VM: $MEMORY"
-			break
-		else
-			echo "Invalid selection. Please choose a number from 1 to $num_options."
-		fi
-    done
+    echo "${available_options[@]}"
 }
-MEMORY=$(select_memory_option)
+
+# User input for VM parameters
+total_memory_mib=$(free -m | awk '/^Mem:/{print int($2)}')
+echo "Total Physical Memory Available: $total_memory_mib MiB"
+
+# Display memory options without "MiB" suffix
+memory_options=($(list_memory_options))
+num_options=${#memory_options[@]}
+
+if [ "$num_options" -eq 0 ]; then
+    echo "Insufficient memory for VM creation."
+    exit 1
+fi
+
+echo "Available Memory Options for VM:"
+for ((i = 0; i < num_options; i++)); do
+    echo "$((i + 1)). ${memory_options[i]}"
+done
+
+# Read and validate user input for memory
+while true; do
+    read -p "Enter the number corresponding to the desired memory option (1 to $num_options): " selection
+
+    if [[ "$selection" -ge 1 && "$selection" -le "$num_options" ]]; then
+        MEMORY="${memory_options[$((selection - 1))]} MiB"
+        break
+    else
+        echo "Invalid selection. Please choose a number from 1 to $num_options."
+    fi
+done
+
+# Display selected memory without "MiB" suffix
 echo "Selected Memory for VM: $MEMORY"
 
 # Function to get the total number of CPU sockets and allow the user to select a number
@@ -227,43 +234,6 @@ choose_cpu_cores() {
 CPU_CORES=$(choose_cpu_cores)
 echo "You have selected $CPU_CORES CPU core(s) for the VM"
 
-# Function to prompt for the storage size and format it correctly
-select_storage_size() {
-    while true; do
-        local min_storage=0
-        case $OS_TYPE in
-            "w11")
-                min_storage=100
-                ;;
-            "wxp"|"w2k"|"w2k3"|"w2k8"|"wvista")
-                min_storage=50
-                ;;
-            "win7"|"win8"|"win10")
-                min_storage=80
-                ;;
-            "l24"|"l26")
-                min_storage=20
-                ;;
-            *)
-                min_storage=1  # For 'other' types, a minimum of 1G is assumed
-                ;;
-        esac
-
-        echo "Note: For OS type $OS_TYPE, a minimum storage of $min_storage GB is required."
-        read -p "Please enter the storage size (e.g., 20G, 50G, etc.): " STORAGE_SIZE
-
-        # Remove the 'G' suffix and check if the entered value is a number and meets the minimum requirement
-        local numeric_size=${STORAGE_SIZE%[Gg]}
-        if [[ "$numeric_size" =~ ^[0-9]+$ ]] && [ "$numeric_size" -ge "$min_storage" ]; then
-            STORAGE_SIZE="${numeric_size}G"
-            echo "Storage size for $VM_NAME is $STORAGE_SIZE"
-            break
-        else
-            echo "Invalid or insufficient storage size. Please enter a value of $min_storage GB or more."
-        fi
-    done
-}
-
 # Function to select network adapter
 select_net_adapter() {
     local net_adapters=("e1000" "e1000-82540em" "e1000-82544gc" "e1000-82545em" "e1000e" "i82551" "i82557b" "i82559er" "ne2k_isa" "ne2k_pci" "pcnet" "rtl8139" "virtio" "vmxnet3") # truncated for brevity
@@ -300,30 +270,6 @@ select_scsi_hw() {
 SCSI_CONTROLLER=$(select_scsi_hw)
 echo "The SCSI Hardware Controller selected for $VM_NAME is $SCSI_CONTROLLER"
 
-# Function to select OS type and set machine and bios if necessary
-select_os_type() {
-    local os_types=("other" "wxp" "w2k" "w2k3" "w2k8" "wvista" "win7" "win8" "win10" "win11" "l24" "l26" "solaris")
-    echo "Available OS Types:"
-    PS3="Select an OS type: "
-    select os in "${os_types[@]}"; do
-        if [[ -n $os ]]; then
-            echo "Selected OS Type: $os"
-            if [[ $os == "w11" ]]; then
-                MACHINE="pc-q35-8.1"
-                BIOS="ovmf"
-                echo "Set machine to $MACHINE and bios to $BIOS for Windows 11"
-            else
-                MACHINE="pc-i440fx-8.1"
-                BIOS="seabios"
-            fi
-            break
-        else
-            echo "Invalid selection. Please try again."
-        fi
-    done
-    echo $os
-}
-
 # Function to select Bridge Interface
 select_bridge_interface() {
     # Get a list of available bridge interfaces and their IP addresses
@@ -356,6 +302,67 @@ select_bridge_interface() {
 }
 BRIDGE=$(select_bridge_interface)
 echo "The Bridge Interface selected for $VM_NAME is $BRIDGE"
+
+# Function to select OS type and set machine and bios if necessary
+select_os_type() {
+    local os_types=("other" "wxp" "w2k" "w2k3" "w2k8" "wvista" "win7" "win8" "win10" "win11" "l24" "l26" "solaris")
+    echo "Available OS Types:"
+    PS3="Select an OS type: "
+    select os in "${os_types[@]}"; do
+        if [[ -n $os ]]; then
+            echo "Selected OS Type: $os"
+            if [[ $os == "w11" ]]; then
+                MACHINE="pc-q35-8.1"
+                BIOS="ovmf"
+                echo "Set machine to $MACHINE and bios to $BIOS for Windows 11"
+            else
+                MACHINE="pc-i440fx-8.1"
+                BIOS="seabios"
+            fi
+            break
+        else
+            echo "Invalid selection. Please try again."
+        fi
+    done
+    echo $os
+}
+
+# Function to prompt for the storage size and format it correctly
+select_storage_size() {
+    while true; do
+        local min_storage=0
+        case $OS_TYPE in
+            "w11")
+                min_storage=100
+                ;;
+            "wxp"|"w2k"|"w2k3"|"w2k8"|"wvista")
+                min_storage=50
+                ;;
+            "win7"|"win8"|"win10")
+                min_storage=80
+                ;;
+            "l24"|"l26")
+                min_storage=20
+                ;;
+            *)
+                min_storage=1  # For 'other' types, a minimum of 1G is assumed
+                ;;
+        esac
+
+        echo "Note: For OS type $OS_TYPE, a minimum storage of $min_storage GB is required."
+        read -p "Please enter the storage size (e.g., 20G, 50G, etc.): " STORAGE_SIZE
+
+        # Remove the 'G' suffix and check if the entered value is a number and meets the minimum requirement
+        local numeric_size=${STORAGE_SIZE%[Gg]}
+        if [[ "$numeric_size" =~ ^[0-9]+$ ]] && [ "$numeric_size" -ge "$min_storage" ]; then
+            STORAGE_SIZE="${numeric_size}G"
+            echo "Storage size for $VM_NAME is $STORAGE_SIZE"
+            break
+        else
+            echo "Invalid or insufficient storage size. Please enter a value of $min_storage GB or more."
+        fi
+    done
+}
 
 create_vm() {
     while true; do
@@ -407,40 +414,57 @@ create_vm() {
 
     # Allocate the main SCSI disk
     pvesm alloc "$STORAGE_POOL" "$VM_ID" "vm-$VM_ID-disk-0.qcow2" "$STORAGE_SIZE"
-    echo "Storage allocated and created for $VM_NAME VM."
+	echo "Storage allocated and created for $VM_NAME VM."
 
-    if [[ $OS_TYPE == "w11" ]]; then
-        # Allocate the EFI disk for Windows 11
-        pvesm alloc $STORAGE_POOL $VM_ID vm-$VM_ID-disk-1.qcow2 1M
-        echo "Created EFI Disk for $VM_NAME"
+	if [[ $OS_TYPE == "w11" ]]; then
+		# Allocate the EFI disk for Windows 11
+		pvesm alloc $STORAGE_POOL $VM_ID vm-$VM_ID-disk-1.qcow2 1M
+		echo "Created EFI Disk for $VM_NAME"
 
-        # Allocate the TPM state disk for Windows 11
-        pvesm alloc $STORAGE_POOL $VM_ID vm-$VM_ID-disk-2.raw 4M
-        echo "Created TPM State Disk for $VM_NAME"
-    fi
+		# Allocate the TPM state disk for Windows 11
+		pvesm alloc $STORAGE_POOL $VM_ID vm-$VM_ID-disk-2.raw 4M
+		echo "Created TPM State Disk for $VM_NAME"
 
-    # Create the VM
-    qm create "$VM_ID" \
-        --name "$VM_NAME" \
-        --memory "$MEMORY" \
-        --sockets "$CPU_SOCKETS" \
-        --cores "$CPU_CORES" \
-        --cpu "$CPU_TYPE" \
-        --net0 "$NET_ADAPTER,bridge=$BRIDGE" \
-        --scsihw "$SCSI_CONTROLLER" \
-        --ostype "$OS_TYPE" \
-        --machine "$MACHINE" \
-        --bios "$BIOS" \
-        --ide2 "$ISO_SELECTION" \
-        --scsi0 "$STORAGE_POOL:$VM_ID/vm-$VM_ID-disk-0.qcow2"
-
-    if [[ $OS_TYPE == "w11" ]]; then
-        # Attach the EFI and TPM state disk to the VM for Windows 11
-        qm set $VM_ID --efidisk0 $STORAGE_POOL:$VM_ID/vm-$VM_ID-disk-1.qcow2,size=528K,efitype=4m,pre-enrolled-keys=1
-        qm set $VM_ID --tpmstate0 $STORAGE_POOL:$VM_ID/vm-$VM_ID-disk-2.raw,version=v2.0
-    fi
-
-    echo "VM $VM_NAME created successfully."
+		# Create the VM with EFI and TPM state disk for Windows 11
+		qm create "$VM_ID" \
+			--name "$VM_NAME" \
+			--memory "$MEMORY" \
+			--sockets "$CPU_SOCKETS" \
+			--cores "$CPU_CORES" \
+			--cpu "$CPU_TYPE" \
+			--net0 "$NET_ADAPTER,bridge=$BRIDGE" \
+			--scsihw "$SCSI_CONTROLLER" \
+			--ostype "$OS_TYPE" \
+			--machine "$MACHINE" \
+			--bios "$BIOS" \
+			--ide2 "$ISO_SELECTION" \
+			--scsi0 "$STORAGE_POOL:$VM_ID/vm-$VM_ID-disk-0.qcow2" \
+			--efidisk0 "$STORAGE_POOL:$VM_ID/vm-$VM_ID-disk-1.qcow2,size=528K,efitype=4m,pre-enrolled-keys=1"
+		
+		qm set $VM_ID --efidisk0 $STORAGE_POOL:$VM_ID/vm-$VM_ID-disk-1.qcow2,size=528K,efitype=4m,pre-enrolled-keys=1
+		echo "EFI Disk set for $VM_ID $VM_NAME"
+		
+		qm set $VM_ID --tpmstate0 "$STORAGE_POOL:$VM_ID/vm-$VM_ID-disk-2.raw,version=v2.0"
+		echo "TPM State Disk set for $VM_ID $VM_NAME"
+		
+	else
+		# Create the VM without EFI and TPM state disk
+		qm create "$VM_ID" \
+			--name "$VM_NAME" \
+			--memory "$MEMORY" \
+			--sockets "$CPU_SOCKETS" \
+			--cores "$CPU_CORES" \
+			--cpu "$CPU_TYPE" \
+			--net0 "$NET_ADAPTER,bridge=$BRIDGE" \
+			--scsihw "$SCSI_CONTROLLER" \
+			--ostype "$OS_TYPE" \
+			--machine "$MACHINE" \
+			--bios "$BIOS" \
+			--ide2 "$ISO_SELECTION" \
+			--scsi0 "$STORAGE_POOL:$VM_ID/vm-$VM_ID-disk-0.qcow2"
+	fi
+	
+	echo "VM $VM_NAME created successfully."
 }
 
 create_vm
