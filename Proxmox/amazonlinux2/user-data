@@ -1,0 +1,16 @@
+#cloud-config
+
+users:
+  - name: administrator         # Replace username with the desired username
+    sudo: ALL=(ALL) NOPASSWD:ALL  # Grants sudo privileges without password prompt
+    groups: wheel           # wheel is the standard group for users with sudo access in Amazon Linux
+    home: /home/administrator   # Optional specify the home directory
+    lock_passwd: false      # This will enable the use of password for this account
+    plain_text_passwd: amazon
+
+#chpasswd:
+#  list: |
+#    administrator:amazon  # Replace 'username' and 'plaintext_password' with your desired values
+#  expire: False
+
+# Other cloud-config settings like package upgrade, package installation, etc.
